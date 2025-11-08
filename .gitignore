@@ -1,0 +1,139 @@
+# —————————————
+# Node / JS
+# —————————————
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.yarn-integrity
+*.tgz
+.pnpm-store/
+
+# Bun
+.bun/
+
+# Logs
+logs/
+*.log
+*.log.*
+
+
+# —————————————
+# Compilados y cachés
+# —————————————
+dist/
+build/
+out/
+
+.esbuild/
+.swc/
+.vite/
+.cache/
+.parcel-cache/
+.eslintcache
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# Storybook
+storybook-static/
+
+# Jest / Cobertura / Tests
+coverage/
+**/coverage/
+*.lcov
+jest-cache/
+jest-stare/
+playwright-report/
+blob-report/
+test-results/
+cypress/videos/
+cypress/screenshots/
+
+
+# —————————————
+# Next.js
+# —————————————
+.next/
+.next/cache/
+.next/standalone/
+.vercel/
+.vercel/output/
+
+
+# —————————————
+# Monorepo (apps/, packages/, etc.)
+# —————————————
+**/node_modules/
+**/dist/
+**/build/
+**/.turbo/
+.turbo/
+
+
+# —————————————
+# Entornos / secretos
+# —————————————
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+
+# —————————————
+# Sistemas operativos
+# — macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+
+# —————————————
+# IDEs / Editores
+# VS Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+# JetBrains
+.idea/
+*.iml
+# Otros
+*.swp
+*.swo
+
+
+# —————————————
+# Docker / CI (opcional según proyecto)
+# —————————————
+.docker/
+docker-data/
+# cdk / infra
+cdk.out/
+
+
+# —————————————
+# Bases de datos locales / Prisma
+# —————————————
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.sqlite-journal
+prisma/dev.db
+prisma/dev.db-journal
+
+
+# —————————————
+# Herramientas varias
+# —————————————
+.pm2/
+.node_repl_history
