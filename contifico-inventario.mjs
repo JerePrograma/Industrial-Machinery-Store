@@ -1,87 +1,102 @@
 #!/usr/bin/env node
-import { writeFile } from 'node:fs/promises';
+// contifico-inventario.mjs
+// Requisitos: Node >= 18 (fetch nativo)
+// Env: API_KEY (obligatorio), API_BASE (opcional), CODES (opcional), ONLY_BODEGAS (opcional)
 
+import { writeFile } from "node:fs/promises";
+
+// ---------- Config ----------
+const DEFAULT_API_BASE = "https://api.contifico.com/sistema/api/v1";
 const DEFAULT_CODES = [
-  'T-678',
-  'T-668',
-  'SIE-295',
-  'CO-280',
-  'T-684',
-  'T-747',
-  'T-727',
-  'T-688',
+  "T-678",
+  "T-668",
+  "SIE-295",
+  "CO-280",
+  "T-684",
+  "T-747",
+  "T-727",
+  "T-688",
 ];
 
-const API_BASE = process.env.API_BASE?.trim() || 'https://api.contifico.com/sistema/api/v1';
+const API_BASE = (process.env.API_BASE?.trim() || DEFAULT_API_BASE).replace(
+  /\/$/,
+  ""
+);
 const API_KEY = process.env.API_KEY?.trim();
-
 if (!API_KEY) {
-  console.error('Error: falta definir la variable de entorno API_KEY.');
+  console.error("Error: falta definir la variable de entorno API_KEY.");
   process.exit(1);
 }
 
-const baseUrl = API_BASE.endsWith('/') ? API_BASE : `${API_BASE}/`;
-
-function parseList(value) {
-  if (!value) return [];
-  return value
-    .split(',')
-    .map((item) => item.trim())
+function parseList(envVal) {
+  return (envVal || "")
+    .split(",")
+    .map((s) => s.trim())
     .filter(Boolean);
 }
-
-const codes = parseList(process.env.CODES);
-const codesToProcess = codes.length ? codes : DEFAULT_CODES;
+const CODES = parseList(process.env.CODES);
+const codesToProcess = CODES.length ? CODES : DEFAULT_CODES;
 const onlyBodegasList = parseList(process.env.ONLY_BODEGAS);
 const onlyBodegasSet = onlyBodegasList.length ? new Set(onlyBodegasList) : null;
 
-const baseHeaders = {
-  Authorization: API_KEY,
-  Accept: 'application/json',
-};
+const baseHeaders = { Authorization: API_KEY, Accept: "application/json" };
 
-function buildUrl(path, queryParams) {
-  const url = new URL(path, baseUrl);
-  if (queryParams) {
-    Object.entries(queryParams).forEach(([key, value]) => {
-      if (value !== undefined && value !== null && String(value).length) {
-        url.searchParams.set(key, String(value));
-      }
-    });
+// ---------- Utils ----------
+function buildUrl(path, query) {
+  const url = new URL(path, `${API_BASE}/`);
+  if (query) {
+    for (const [k, v] of Object.entries(query)) {
+      if (v !== undefined && v !== null && String(v).length)
+        url.searchParams.set(k, String(v));
+    }
   }
   return url;
 }
 
+function toNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 async function requestJson(path, { query } = {}) {
   const url = buildUrl(path, query);
+  let res;
   try {
-    const response = await fetch(url, {
-      headers: baseHeaders,
-    });
+    res = await fetch(url, { headers: baseHeaders });
+  } catch (e) {
+    throw new Error(
+      `Fetch falló: ${e instanceof Error ? e.message : String(e)}`
+    );
+  }
 
-    const text = await response.text();
-    if (!response.ok) {
-      const snippet = text.slice(0, 200);
-      throw new Error(`${response.status} ${response.statusText}${snippet ? ` - ${snippet}` : ''}`);
-    }
+  const text = await res.text();
+  if (!res.ok) {
+    const snippet = text ? ` - ${text.slice(0, 200)}` : "";
+    throw new Error(`${res.status} ${res.statusText}${snippet}`);
+  }
 
-    if (!text) {
-      return null;
-    }
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  if (!ct.includes("application/json")) {
+    throw new Error(`Content-Type inesperado: ${ct || "N/D"}`);
+  }
 
-    try {
-      return JSON.parse(text);
-    } catch (parseError) {
-      throw new Error(`No se pudo parsear JSON: ${parseError.message}`);
-    }
-  } catch (error) {
-    throw new Error(`Solicitud a ${url.toString()} falló: ${error.message}`);
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(
+      `No se pudo parsear JSON: ${e instanceof Error ? e.message : String(e)}`
+    );
   }
 }
 
-async function safeRequestJson(path, options) {
+async function safeRequestJson(path, opts) {
   try {
-    const data = await requestJson(path, options);
+    const data = await requestJson(path, opts);
     return { ok: true, data };
   } catch (error) {
     return { ok: false, error };
@@ -93,145 +108,165 @@ function asArray(data) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data.results)) return data.results;
   if (Array.isArray(data.data)) return data.data;
+  if (Array.isArray(data.items)) return data.items;
   return [];
 }
 
-async function loadCategories() {
-  const { ok, data, error } = await safeRequestJson('categoria/');
-  if (!ok) {
-    console.error(`[WARN] No se pudieron cargar categorías: ${error.message}`);
-    return new Map();
-  }
-
-  const categories = new Map();
-  for (const category of asArray(data)) {
-    if (!category) continue;
-    const id = category.id ?? category.categoria_id ?? category.uid;
-    const name = category.nombre ?? category.name ?? category.descripcion ?? null;
-    if (id !== undefined && name) {
-      categories.set(String(id), name);
-    }
-  }
-  return categories;
-}
-
-async function findProductByCode(code) {
-  const searchErrors = [];
-
-  const byCode = await safeRequestJson('producto/', { query: { codigo: code } });
-  if (!byCode.ok) {
-    searchErrors.push(`Error en búsqueda por codigo: ${byCode.error.message}`);
-  }
-  let candidates = byCode.ok ? asArray(byCode.data) : [];
-
-  if (!candidates.length) {
-    const byFilter = await safeRequestJson('producto/', { query: { filtro: code } });
-    if (!byFilter.ok) {
-      searchErrors.push(`Error en búsqueda por filtro: ${byFilter.error.message}`);
-    }
-    if (byFilter.ok) {
-      const items = asArray(byFilter.data);
-      const exact = items.find((item) => String(item?.codigo ?? '').trim() === code);
-      candidates = exact ? [exact] : items;
-    }
-  }
-
-  const product = candidates.length ? candidates[0] : null;
-  return { product, searchErrors };
-}
-
-function normaliseNumber(value) {
-  if (value === null || value === undefined || value === '') {
-    return null;
-  }
-  const num = Number(value);
-  return Number.isFinite(num) ? num : null;
-}
-
-function mapBodegas(stockItems) {
-  const bodegas = [];
-  for (const item of stockItems) {
-    if (!item) continue;
-    const bodega = item.bodega ?? {};
-    const id = item.bodega_id ?? bodega.id ?? item.id_bodega ?? null;
-    const nombre = item.bodega_nombre ?? bodega.nombre ?? bodega.name ?? null;
-    const cantidadRaw = item.cantidad ?? item.stock ?? item.existencia ?? null;
-    let cantidad = normaliseNumber(cantidadRaw);
-    if (cantidad === null) {
-      const numeric = Number(cantidadRaw);
-      cantidad = Number.isFinite(numeric) ? numeric : 0;
-    }
-
-    const entry = {
-      bodega_id: id !== null ? String(id) : '',
-      bodega_nombre: nombre ?? '',
-      cantidad: typeof cantidad === 'number' ? cantidad : 0,
-    };
-
-    if (
-      !onlyBodegasSet ||
-      onlyBodegasSet.has(entry.bodega_id) ||
-      onlyBodegasSet.has(entry.bodega_nombre)
-    ) {
-      bodegas.push(entry);
-    }
-  }
-  return bodegas;
-}
-
-function computeDiagnosis(productInfo) {
-  const issues = [];
-
-  if (productInfo.tipo !== 'PRO') {
-    issues.push(`tipo=${productInfo.tipo ?? 'N/D'}`);
-  }
-  if (productInfo.tipo_producto !== 'SIM') {
-    issues.push(`tipo_producto=${productInfo.tipo_producto ?? 'N/D'}`);
-  }
-  if (productInfo.estado !== 'A') {
-    issues.push(`estado=${productInfo.estado ?? 'N/D'}`);
-  }
-
-  if (!issues.length) {
-    return { diagnosis: 'OK', diagnosis_reason: null };
-  }
-
-  return {
-    diagnosis: 'NO_PRODUCTO_API',
-    diagnosis_reason: `Producto encontrado pero no cumple criterios: ${issues.join(', ')}`,
-  };
-}
-
-function bodegasToCsvCell(bodegas) {
-  if (!bodegas.length) return '';
-  const parts = bodegas.map((bodega) => {
-    const amount = Number.isFinite(bodega.cantidad) ? bodega.cantidad : Number(bodega.cantidad) || 0;
-    return `${bodega.bodega_nombre}:${bodega.bodega_id}=${amount}`;
-  });
-  return parts.join(';');
-}
-
 function escapeCsv(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
+  if (value === null || value === undefined) return "";
   const str = String(value);
-  if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r') || str.includes(';')) {
+  if (
+    str.includes('"') ||
+    str.includes(",") ||
+    str.includes(";") ||
+    str.includes("\n") ||
+    str.includes("\r")
+  ) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
 }
 
-async function main() {
-  console.log(`Procesando ${codesToProcess.length} códigos de producto...`);
+function bodegasToCsvCell(bodegas) {
+  if (!Array.isArray(bodegas) || bodegas.length === 0) return "";
+  return bodegas
+    .map((b) => {
+      const amount = Number.isFinite(b.cantidad)
+        ? b.cantidad
+        : Number(b.cantidad) || 0;
+      return `${b.bodega_nombre}:${b.bodega_id}=${amount}`;
+    })
+    .join(";");
+}
 
+// ---------- Domain mappers ----------
+async function loadCategories() {
+  const { ok, data, error } = await safeRequestJson("categoria/");
+  if (!ok) {
+    console.error(`[WARN] No se pudieron cargar categorías: ${error.message}`);
+    return new Map();
+  }
+  const map = new Map();
+  for (const cat of asArray(data)) {
+    if (!cat) continue;
+    const id = cat.id ?? cat.categoria_id ?? cat.uid ?? cat.codigo ?? null;
+    const name = cat.nombre ?? cat.name ?? cat.descripcion ?? null;
+    if (id !== null && name) map.set(String(id), String(name));
+  }
+  return map;
+}
+
+function exactMatchCaseInsensitive(items, code) {
+  const target = code.toLowerCase();
+  return (
+    items.find(
+      (p) =>
+        String(p?.codigo ?? "")
+          .trim()
+          .toLowerCase() === target
+    ) || null
+  );
+}
+
+async function findProductByCode(code) {
+  const errors = [];
+
+  const byCode = await safeRequestJson("producto/", {
+    query: { codigo: code },
+  });
+  let list = byCode.ok ? asArray(byCode.data) : [];
+  if (!byCode.ok) errors.push(`búsqueda codigo: ${byCode.error.message}`);
+
+  let product = exactMatchCaseInsensitive(list, code) || list[0];
+  if (product) return { product, source: "codigo", errors };
+
+  const byFilter = await safeRequestJson("producto/", {
+    query: { filtro: code },
+  });
+  if (!byFilter.ok) errors.push(`búsqueda filtro: ${byFilter.error.message}`);
+  list = byFilter.ok ? asArray(byFilter.data) : [];
+  product = exactMatchCaseInsensitive(list, code) || list[0];
+
+  return {
+    product: product || null,
+    source: product ? "filtro" : null,
+    errors,
+  };
+}
+
+function mapBodegaEntry(entry) {
+  const bodegaObj = entry?.bodega || {};
+  const bodega_id =
+    entry?.bodega_id ??
+    bodegaObj.id ??
+    entry?.id_bodega ??
+    entry?.codigo ??
+    null;
+  const bodega_nombre =
+    entry?.bodega_nombre ??
+    bodegaObj.nombre ??
+    bodegaObj.name ??
+    entry?.nombre ??
+    entry?.name ??
+    (bodega_id ? `Bodega ${bodega_id}` : "Bodega");
+
+  const cantidad =
+    toNumber(entry?.cantidad) ??
+    toNumber(entry?.stock) ??
+    toNumber(entry?.existencia) ??
+    toNumber(entry?.disponible) ??
+    toNumber(entry?.cantidad_total) ??
+    0;
+
+  const out = {
+    bodega_id: bodega_id !== null ? String(bodega_id) : "",
+    bodega_nombre: String(bodega_nombre),
+    cantidad,
+  };
+
+  if (!onlyBodegasSet) return out;
+  if (
+    onlyBodegasSet.has(out.bodega_id) ||
+    onlyBodegasSet.has(out.bodega_nombre)
+  )
+    return out;
+  return null;
+}
+
+async function fetchStock(productId) {
+  if (!productId) return [];
+  const path = `producto/${encodeURIComponent(productId)}/stock/`;
+  const { ok, data, error } = await safeRequestJson(path);
+  if (!ok) throw new Error(error.message);
+  const list = asArray(data);
+  const mapped = list.map(mapBodegaEntry).filter(Boolean);
+  return mapped;
+}
+
+function computeDiagnosis(p) {
+  const issues = [];
+  if (p.tipo !== "PRO") issues.push(`tipo=${p.tipo ?? "N/D"}`);
+  if (p.tipo_producto !== "SIM")
+    issues.push(`tipo_producto=${p.tipo_producto ?? "N/D"}`);
+  if (p.estado !== "A") issues.push(`estado=${p.estado ?? "N/D"}`);
+
+  if (!issues.length) return { diagnosis: "OK", diagnosis_reason: null };
+  return {
+    diagnosis: "NO_PRODUCTO_API",
+    diagnosis_reason: `Producto no cumple criterios: ${issues.join(", ")}`,
+  };
+}
+
+// ---------- Main ----------
+async function main() {
+  console.log(`Procesando ${codesToProcess.length} códigos...`);
   const categories = await loadCategories();
 
   const results = [];
 
   for (const code of codesToProcess) {
-    console.log(`→ Código ${code}`);
-    const baseInfo = {
+    console.log(`→ ${code}`);
+    const rec = {
       code,
       id_api: null,
       nombre: null,
@@ -244,104 +279,127 @@ async function main() {
       tipo_producto: null,
       bodegas: [],
       stock_total: 0,
-      diagnosis: 'NO_VISIBLE_EN_RUC',
-      diagnosis_reason: null,
+      diagnosis: "NO_VISIBLE_EN_RUC",
+      diagnosis_reason:
+        "Producto no encontrado por codigo ni filtro en este RUC.",
     };
 
-    const { product, searchErrors } = await findProductByCode(code);
-
+    const { product, errors } = await findProductByCode(code);
     if (!product) {
-      const reasonParts = ['Producto no encontrado en la API para este RUC.'];
-      if (searchErrors.length) {
-        reasonParts.push(searchErrors.join(' | '));
+      if (errors.length) rec.diagnosis_reason += ` (${errors.join(" | ")})`;
+      results.push(rec);
+      continue;
+    }
+
+    const idApi = product.id ?? product.uid ?? product.producto_id ?? null;
+    if (!idApi) {
+      rec.diagnosis = "NO_PRODUCTO_API";
+      rec.diagnosis_reason = "Respuesta sin identificador de producto (id).";
+      results.push(rec);
+      continue;
+    }
+
+    // Campos principales
+    rec.id_api = String(idApi);
+    rec.nombre = product.nombre ?? product.name ?? product.descripcion ?? null;
+    const catId =
+      product.categoria_id ??
+      product.id_categoria ??
+      product.categoria?.id ??
+      null;
+    rec.categoria_id =
+      catId !== null && catId !== undefined ? String(catId) : null;
+    rec.categoria_nombre =
+      (rec.categoria_id && categories.get(rec.categoria_id)) ??
+      product.categoria?.nombre ??
+      product.categoria?.name ??
+      null;
+
+    rec.porcentaje_iva = product.porcentaje_iva ?? product.iva ?? null;
+    rec.pvp1 = product.pvp1 ?? product.precio ?? product.precio1 ?? null;
+    rec.estado = product.estado ?? product.state ?? null;
+    rec.tipo = product.tipo ?? product.type ?? null;
+    rec.tipo_producto = product.tipo_producto ?? product.product_type ?? null;
+
+    // Diagnóstico
+    const diag = computeDiagnosis(rec);
+    rec.diagnosis = diag.diagnosis;
+    rec.diagnosis_reason = diag.diagnosis_reason;
+
+    // Stock por bodega
+    try {
+      rec.bodegas = await fetchStock(idApi);
+      rec.stock_total = rec.bodegas.reduce(
+        (acc, b) => acc + (Number.isFinite(b.cantidad) ? b.cantidad : 0),
+        0
+      );
+      if (rec.diagnosis === "OK" && rec.bodegas.length === 0) {
+        rec.diagnosis_reason =
+          "OK sin stock visible en las bodegas seleccionadas.";
       }
-      baseInfo.diagnosis_reason = reasonParts.join(' ');
-      results.push(baseInfo);
-      continue;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Si era OK pero falló stock, marcamos causa operativa
+      rec.diagnosis =
+        rec.diagnosis === "OK" ? "NO_PRODUCTO_API" : rec.diagnosis;
+      rec.diagnosis_reason = `Error obteniendo stock: ${msg}`;
+      rec.bodegas = [];
     }
 
-    const productId = product.id ?? product.uid ?? product.producto_id ?? null;
-    if (!productId) {
-      baseInfo.diagnosis = 'NO_PRODUCTO_API';
-      baseInfo.diagnosis_reason = 'Respuesta sin identificador de producto (id).';
-      results.push(baseInfo);
-      continue;
-    }
-
-    baseInfo.id_api = String(productId);
-    baseInfo.nombre = product.nombre ?? product.name ?? null;
-    const categoriaId = product.categoria_id ?? product.id_categoria ?? product.categoria ?? null;
-    if (categoriaId !== null && categoriaId !== undefined) {
-      baseInfo.categoria_id = String(categoriaId);
-      baseInfo.categoria_nombre = categories.get(String(categoriaId)) ?? null;
-    }
-    baseInfo.porcentaje_iva = product.porcentaje_iva ?? product.iva ?? null;
-    baseInfo.pvp1 = product.pvp1 ?? product.precio ?? product.precio1 ?? null;
-    baseInfo.estado = product.estado ?? product.state ?? null;
-    baseInfo.tipo = product.tipo ?? product.type ?? null;
-    baseInfo.tipo_producto = product.tipo_producto ?? product.product_type ?? null;
-
-    const stockResponse = await safeRequestJson(`producto/${productId}/stock/`);
-    if (!stockResponse.ok) {
-      console.error(`[WARN] No se pudo obtener stock para ${code} (ID ${productId}): ${stockResponse.error.message}`);
-    }
-    const stockItems = stockResponse.ok ? asArray(stockResponse.data) : [];
-    baseInfo.bodegas = mapBodegas(stockItems);
-    baseInfo.stock_total = baseInfo.bodegas.reduce((total, item) => total + (Number.isFinite(item.cantidad) ? item.cantidad : 0), 0);
-
-    const diagnosis = computeDiagnosis(baseInfo);
-    baseInfo.diagnosis = diagnosis.diagnosis;
-    baseInfo.diagnosis_reason = diagnosis.diagnosis_reason;
-
-    results.push(baseInfo);
+    results.push(rec);
   }
 
-  await writeFile('salida.json', `${JSON.stringify(results, null, 2)}\n`, 'utf8');
+  // Persistencia
+  await writeFile(
+    "salida.json",
+    JSON.stringify(results, null, 2) + "\n",
+    "utf8"
+  );
 
-  const csvHeaders = [
-    'code',
-    'id_api',
-    'nombre',
-    'categoria_id',
-    'categoria_nombre',
-    'porcentaje_iva',
-    'pvp1',
-    'estado',
-    'tipo',
-    'tipo_producto',
-    'bodegas',
-    'diagnosis',
-    'diagnosis_reason',
+  const headers = [
+    "code",
+    "id_api",
+    "nombre",
+    "categoria_id",
+    "categoria_nombre",
+    "porcentaje_iva",
+    "pvp1",
+    "estado",
+    "tipo",
+    "tipo_producto",
+    "bodegas",
+    "stock_total",
+    "diagnosis",
+    "diagnosis_reason",
   ];
-
-  const csvLines = [csvHeaders.join(',')];
-
-  for (const item of results) {
-    const bodegasCell = bodegasToCsvCell(item.bodegas);
+  const csvLines = [headers.join(",")];
+  for (const r of results) {
     const row = [
-      item.code,
-      item.id_api,
-      item.nombre,
-      item.categoria_id,
-      item.categoria_nombre,
-      item.porcentaje_iva,
-      item.pvp1,
-      item.estado,
-      item.tipo,
-      item.tipo_producto,
-      bodegasCell,
-      item.diagnosis,
-      item.diagnosis_reason,
+      r.code,
+      r.id_api,
+      r.nombre,
+      r.categoria_id,
+      r.categoria_nombre,
+      r.porcentaje_iva,
+      r.pvp1,
+      r.estado,
+      r.tipo,
+      r.tipo_producto,
+      bodegasToCsvCell(r.bodegas),
+      r.stock_total,
+      r.diagnosis,
+      r.diagnosis_reason,
     ].map(escapeCsv);
-    csvLines.push(row.join(','));
+    csvLines.push(row.join(","));
   }
+  await writeFile("salida.csv", csvLines.join("\n") + "\n", "utf8");
 
-  await writeFile('salida.csv', `${csvLines.join('\n')}\n`, 'utf8');
-
-  console.log('Listo. Archivos generados: salida.json y salida.csv');
+  console.log("Listo. Archivos generados: salida.json y salida.csv");
 }
 
-main().catch((error) => {
-  console.error(`Error inesperado: ${error.message}`);
+main().catch((err) => {
+  console.error(
+    `Error inesperado: ${err instanceof Error ? err.message : String(err)}`
+  );
   process.exit(1);
 });
