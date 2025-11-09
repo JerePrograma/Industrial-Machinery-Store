@@ -118,6 +118,19 @@ npm run dev
   - Marca (Heller, Follow Machines, Helfer Industrial, etc.)
   - Búsqueda por texto
 
+## 🧰 Utilidad CLI: Inventario Contífico
+
+Para consultar productos en Siigo Contífico (EC) y exportar el inventario a JSON/CSV, podés usar el script incluido en la raíz del repositorio:
+
+```bash
+export API_BASE="https://api.contifico.com/sistema/api/v1"
+export API_KEY="<PEGAR_AQUI_LA_API_KEY>"
+# opcional: export CODES="T-678,T-668,SIE-295,CO-280,T-684,T-747,T-727,T-688"
+# opcional: export ONLY_BODEGAS="BOD001,BOD004"
+node contifico-inventario.mjs
+# genera salida.json y salida.csv en el directorio actual
+```
+
 ### 🔥 Ofertas Especiales
 - Grid de productos en promoción
 - Filtros específicos para ofertas
